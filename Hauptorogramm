@@ -1,0 +1,325 @@
+//*******************libaries********************************
+
+#include <LiquidCrystal_I2C.h>
+LiquidCrystal_I2C lcd(0x27, 16, 2);
+
+// ************ Definiton Variablen ********************
+
+
+//******************Interface******************************
+
+int redbuttonPin    = 8; 
+int greenbuttonPin  = 7; 
+int bluebuttonPin   = 2; 
+int yellowbuttonPin = 4; 
+
+int redledPin       = A2; 
+int greenledPin     = A1; 
+int blueledPin      = A3;
+
+int potiPin         = A0;
+
+// variable configuration 
+
+bool  systemstate = false;
+bool systemstateold =true;
+int   adcValue    =0;
+float speedrange  =1000;
+
+int speedtempo  =0;
+int speedtempoold  =0;
+
+float bouncetimeout = 200;
+float bouncetimer=0;
+
+//*********************Leistungselektronik***************************
+
+// Erste H-Brücke: 
+int igbtOL_1 = 3;     //PWM-fähig  OL = oben links 
+int igbtOR_1 = 5;     //PWM-fähig
+int igbtUL_1 = 6;     // UL = unten links
+int igbtUR_1 = 9; 
+int pwmValue_1 = 0;
+bool state1; 
+
+// Zweite H-Brücke: 
+
+int igbtOL_2 = 10;     //PWM-fähig
+int igbtOR_2 = 11;     //PWM-fähig
+int igbtUL_2 = 12; 
+int igbtUR_2 = 13;
+bool state2; 
+
+// Gemeinsame Variablen: 
+int maxPWM = 255; 
+int pwmValue_2 = 0;
+int iteration = 0; 
+int aufloesung = 100;         // Diskretisierung pro halbe Periodendauer 
+unsigned long lastCycle = 0; 
+int delayTime = 1;                // delayTime * aufleosung = halbe Periodendauer
+
+
+
+
+
+void setup() 
+{
+  Serial.begin(9600); 
+
+  lcd.init();                                  //LCD Display initialisieren
+  lcd.backlight();
+  
+  pinMode(redbuttonPin, INPUT);             //Outputs konfigurieren 
+  pinMode(greenbuttonPin, INPUT);
+  pinMode(bluebuttonPin, INPUT);
+  pinMode(yellowbuttonPin, INPUT);
+  pinMode(greenledPin, OUTPUT);
+  pinMode(redledPin, OUTPUT);
+  pinMode(blueledPin, OUTPUT);
+  pinMode(igbtOL_1, OUTPUT);                 
+  pinMode(igbtOR_1, OUTPUT);
+  pinMode(igbtUL_1, OUTPUT);
+  pinMode(igbtUR_1, OUTPUT);
+  pinMode(igbtOL_2, OUTPUT); 
+  pinMode(igbtOR_2, OUTPUT);
+  pinMode(igbtUL_2, OUTPUT);
+  pinMode(igbtUR_2, OUTPUT);
+  
+  state1 = false;                           //false -> negative Halbwelle akutell
+  state2 = false; 
+
+
+}
+
+void loop() 
+{ 
+  //******************************Interface Teil *************************************************************
+  if (digitalRead(redbuttonPin) == LOW)
+  {
+    systemstate=false;
+  }
+
+  if(digitalRead(greenbuttonPin) == LOW)
+  {
+    systemstate=true;
+  }
+
+  if(systemstate==false)
+  {
+    digitalWrite(redledPin, HIGH);
+    digitalWrite(greenledPin, LOW);
+    speedtempo =0;
+    if(systemstate!=systemstateold)
+    {
+      Serial.println("System off"); 
+      lcd.clear();
+      lcd.setCursor(6, 0);
+      lcd.print("out");
+      lcd.setCursor(0, 1);
+      lcd.print("speed: ");
+      lcd.print(speedtempo);
+      lcd.print(" rpm");
+      systemstateold=systemstate;
+    }
+  }
+
+  if(systemstate==true)
+  {
+    digitalWrite(redledPin,LOW );
+    digitalWrite(greenledPin, HIGH);
+    if(millis()>bouncetimer+bouncetimeout)
+    {
+      digitalWrite(blueledPin, LOW);
+  
+      if (digitalRead(bluebuttonPin) == LOW)
+      {
+        speedrange=speedrange*10;
+        digitalWrite(blueledPin,HIGH );
+      }
+
+      if (digitalRead(yellowbuttonPin) == LOW)
+      {
+        speedrange=speedrange/10;
+        digitalWrite(blueledPin,HIGH );
+      }
+      bouncetimer=millis();
+    }
+
+    if(speedrange>10000)
+    {
+      speedrange=10000;
+    }
+    if(speedrange<10)
+    {
+      speedrange=10;
+    }
+
+    adcValue = analogRead(potiPin); 
+    speedtempo= adcValue * (speedrange / 1023.0);
+
+    if(systemstate!=systemstateold)
+    {
+      //serial output    
+      Serial.println("System on");  
+      //LCD output 
+      lcd.clear();
+      lcd.setCursor(7, 0);
+      lcd.print("on");
+      lcd.setCursor(0, 1);
+      lcd.print("speed: ");
+      lcd.print(speedtempo);
+      lcd.print(" rpm ");
+    }
+  
+    if(speedtempo>speedtempoold+(speedrange/100) || speedtempo<speedtempoold-(speedrange/100))
+    {
+      //serial output
+      Serial.println("speedrange: "+String(speedtempo)+" rpm");
+
+      //LCD output
+      lcd.clear();
+      lcd.setCursor(7, 0);
+      lcd.print("On");
+      lcd.setCursor(0, 1);
+      lcd.print("speed: ");
+      lcd.print(speedtempo);
+      lcd.print(" rpm ");
+      speedtempoold=speedtempo;
+    }
+    systemstateold =systemstate;
+  }
+//************************* Umrechnung von Interfaceteil zum Leistungsteil************************************
+
+// aus dem Interfaceteil purzelt die Variabel speedtempo in rpm heraus. Diese muss umgewandelt werden und mit der Variabel "aufleosung" in Verbindung gebracht werden:
+// 0,5 Periodendauer = aufleosung*delaytime
+
+ delayTime = 30/(speedtempo*aufloesung);    // Die Delaytime ist mit der Aufleosung maßgeblich für die Frequenz am Ausgang verantwortlich
+
+
+
+
+//*******************************Leistungsteil**********************************************
+
+  
+  if(millis() - lastCycle > delayTime)                                 // um delays zu vermeiden 
+  {
+    lastCycle = millis(); 
+    ++ iteration; 
+    //Serial.print("Iteration: ");
+    Serial.print(iteration);
+    Serial.print("\t");
+    Serial.print(pwmValue_1); 
+    Serial.print("\t");
+    Serial.println(pwmValue_2);
+
+ 
+    if (iteration < aufloesung + 1)                                              // Postive Halbwelle erste Phase 
+    {
+      if (state1 != true)                                                        // So wird ein flackern der Outputs verhindert
+      {
+        digitalWrite(igbtOR_1, LOW); 
+        digitalWrite(igbtUL_1, LOW); 
+        digitalWrite(igbtUR_1, HIGH);
+        Serial.println(" outputs set pos 1.Phase  "); 
+      }
+      state1 = true;
+      
+      pwmValue_1 = abs(sin(iteration*3.14/aufloesung))*maxPWM;    
+      analogWrite(igbtOL_1, pwmValue_1); 
+      //Serial.print(" 1 Phase PWM: "); 
+
+      if(iteration < 51)                                                       //Postives Viertel der zweiten Phase 
+      {
+        if(state2 != true)
+        {
+          digitalWrite(igbtOR_2, LOW); 
+          digitalWrite(igbtUL_2, LOW); 
+          digitalWrite(igbtUR_2, HIGH);
+          Serial.println(" outputs set pos 2.Phase  ");
+        }
+        state2 = true; 
+        
+        pwmValue_2 = abs(cos(iteration*3.14/aufloesung))*maxPWM; 
+        analogWrite(igbtOL_2, pwmValue_2);
+        //Serial.print("  2 Phase PWM: "); 
+        
+      }
+      if(iteration > 50)                                                     //Negatives Viertel der zweiten Phase 
+      {
+        if(state2 != false)
+        {
+          digitalWrite(igbtUR_2, LOW); 
+          digitalWrite(igbtOL_2, LOW); 
+          digitalWrite(igbtUL_2, HIGH);
+          Serial.println(" outputs set neg 2.Phase  ");
+        }
+        state2 = false;  
+        
+        pwmValue_2 = abs(cos(iteration*3.14/aufloesung))*maxPWM; 
+        analogWrite(igbtOR_2, pwmValue_2);
+        //Serial.print("  2 Phase PWM: "); 
+      }
+    }
+    
+//***************************************************************************************************************************************************************
+ 
+    else if ( iteration > 2*aufloesung)                               // Ende der beiden Halbwellen 
+    {
+      iteration = 0;                                                 // Zähler wieder auf Null setzten
+      Serial.println(" "); 
+      Serial.println(" "); 
+    }
+    
+//***************************************************************************************************************************************************************
+
+    else                                                              //Negative Halbwelle erste Phase
+    {
+      if(state1 != false)
+      {
+        digitalWrite(igbtUR_1, LOW); 
+        digitalWrite(igbtOL_1, LOW); 
+        digitalWrite(igbtUL_1, HIGH);
+        Serial.println(" outputs set neg 1.Phase  ");
+      }
+      state1 = false; 
+  
+      pwmValue_1 = abs(sin((iteration-aufloesung)*3.14/aufloesung))*maxPWM;    
+      analogWrite(igbtOR_1, pwmValue_1);
+      //Serial.print("  1 Phase PWM: ");
+
+      if(iteration < 151)                                                //Negatives Viertel der zweiten Phase                      
+      {
+        if(state2 != false)
+        {
+          digitalWrite(igbtUR_2, LOW); 
+          digitalWrite(igbtOL_2, LOW); 
+          digitalWrite(igbtUL_2, HIGH);
+          Serial.println(" outputs set neg 2.Phase  "); 
+          
+        }
+        state2 = false; 
+        
+        pwmValue_2 = abs(cos(iteration*3.14/aufloesung))*maxPWM; 
+        analogWrite(igbtOR_2, pwmValue_2);
+        //Serial.print("  2 Phase PWM: "); 
+      }
+      if(iteration > 150)                                             //Postives Viertel der zweiten Phase
+      {
+        if(state2 != true)
+        {
+          digitalWrite(igbtOR_2, LOW); 
+          digitalWrite(igbtUL_2, LOW); 
+          digitalWrite(igbtUR_2, HIGH);
+          Serial.println(" outputs set pos 2.Phase  ");
+        }
+        state2 = true; 
+        
+        pwmValue_2 = abs(cos(iteration*3.14/aufloesung))*maxPWM; 
+        analogWrite(igbtOL_2, pwmValue_2);
+        //Serial.print("  2 Phase PWM: ");
+      }
+    }
+  }
+}
+
+   
